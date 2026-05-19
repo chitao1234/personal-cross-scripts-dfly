@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+: "${HAIKU_SYSROOT:=/mnt/test}"
+
+pkgconfig_libdir="${HAIKU_SYSROOT}/boot/system/develop/lib/pkgconfig"
+pkgconfig_nonpackaged="${HAIKU_SYSROOT}/boot/system/non-packaged/develop/lib/pkgconfig"
+
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_SYSROOT_DIR="${HAIKU_SYSROOT}"
+export PKG_CONFIG_LIBDIR="${PKG_CONFIG_LIBDIR:-${pkgconfig_libdir}:${pkgconfig_nonpackaged}}"
+
+exec /usr/bin/pkg-config "$@"

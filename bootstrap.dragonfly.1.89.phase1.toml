@@ -1,0 +1,19 @@
+change-id = "ignore"
+
+[build]
+build = "x86_64-unknown-linux-gnu"
+host = ["x86_64-unknown-linux-gnu"]
+target = ["x86_64-unknown-linux-gnu"]
+build-dir = "build-dragonfly-phase1"
+cargo = "/home/chi/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo"
+rustc = "/home/chi/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/rustc"
+extended = true
+tools = ["cargo"]
+docs = false
+compiler-docs = false
+
+[llvm]
+download-ci-llvm = true
+
+[rust]
+download-rustc = false

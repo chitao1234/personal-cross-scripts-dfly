@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+set -eu
+
+: "${DRAGONFLY_SYSROOT:=/mnt/t2}"
+: "${DRAGONFLY_USE_LD:=gold}"
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+compat_dir="${script_dir}/../dragonfly50-compat"
+compat_src="${compat_dir}/dragonfly50-compat.c"
+compat_obj="${compat_dir}/dragonfly50-compat.o"
+compat_lock="${compat_obj}.lock"
+link_shim_dir="${script_dir}/../dragonfly-link-shim/lib"
+link_shim_libc="${link_shim_dir}/libc.so.8"
+link_shim_lock="${link_shim_libc}.lock"
+
+# Prevent host-side include path environment from leaking Linux headers into
+# DragonFly-targeted builds. This is required even with --sysroot because Clang
+# still honors CPATH/C_INCLUDE_PATH/CPLUS_INCLUDE_PATH ahead of normal system
+# header resolution.
+sanitized_driver_env=(
+  env
+  -u CPATH
+  -u C_INCLUDE_PATH
+  -u CPLUS_INCLUDE_PATH
+  -u OBJC_INCLUDE_PATH
+  -u OBJCPLUS_INCLUDE_PATH
+  -u INCLUDE
+  -u COMPILER_PATH
+  -u GCC_EXEC_PREFIX
+)
+
+gcc_prefix="${DRAGONFLY_SYSROOT}/opt/gcc-8.3.0"
+gcc_runtime_include_dir="${gcc_prefix}/lib/gcc/x86_64-unknown-dragonfly5.0/8.3.0/include"
+gcc_include_dir="${gcc_prefix}/include"
+gcc_fixed_include_dir="${gcc_prefix}/lib/gcc/x86_64-unknown-dragonfly5.0/8.3.0/include-fixed"
+
+gcc_runtime_dir=
+for candidate in \
+  "${DRAGONFLY_SYSROOT}/opt/gcc-8.3.0/lib/gcc/x86_64-unknown-dragonfly5.0/8.3.0" \
+  "${DRAGONFLY_SYSROOT}/usr/lib/gcc80" \
+  "${DRAGONFLY_SYSROOT}/usr/lib/gcc50" \
+  "${DRAGONFLY_SYSROOT}/usr/lib/gcc47"
+do
+  if [ -f "${candidate}/crtbegin.o" ] && [ -f "${candidate}/libgcc.a" ]; then
+    gcc_runtime_dir="${candidate}"
+    break
+  fi
+done
+
+if [ -z "${gcc_runtime_dir}" ]; then
+  echo "error: no DragonFly GCC runtime found under ${DRAGONFLY_SYSROOT}/usr/lib" >&2
+  exit 1
+fi
+
+use_link_shim=0
+case "${DRAGONFLY_LINK_SHIM:-auto}" in
+  0|false|FALSE|off|OFF|no|NO)
+    ;;
+  1|true|TRUE|on|ON|yes|YES)
+    use_link_shim=1
+    ;;
+  auto|AUTO)
+    if [ "${DRAGONFLY_USE_LD}" != "gold" ]; then
+      use_link_shim=1
+    fi
+    ;;
+  *)
+    echo "error: unsupported DRAGONFLY_LINK_SHIM value: ${DRAGONFLY_LINK_SHIM}" >&2
+    exit 1
+    ;;
+esac
+
+prepare_link_shim() {
+  mkdir -p "${link_shim_dir}"
+
+  if [ ! -f "${link_shim_libc}" ] || [ "${DRAGONFLY_SYSROOT}/lib/libc.so.8" -nt "${link_shim_libc}" ]; then
+    while ! mkdir "${link_shim_lock}" 2>/dev/null; do
+      sleep 1
+    done
+
+    cleanup_link_shim_lock() {
+      rmdir "${link_shim_lock}" 2>/dev/null || true
+    }
+
+    trap cleanup_link_shim_lock EXIT INT TERM
+
+    if [ ! -f "${link_shim_libc}" ] || [ "${DRAGONFLY_SYSROOT}/lib/libc.so.8" -nt "${link_shim_libc}" ]; then
+      cp -f "${DRAGONFLY_SYSROOT}/lib/libc.so.8" "${link_shim_libc}"
+      chmod u+w "${link_shim_libc}"
+      # DragonFly 5.0 libc has a local TLS dynsym entry in the global range.
+      # Newer host linkers reject it, so rewrite the binding in the shim copy.
+      printf '\x16' | dd of="${link_shim_libc}" bs=1 seek=$((0x244)) conv=notrunc status=none
+      ln -sf "libc.so.8" "${link_shim_dir}/libc.so"
+    fi
+
+    cleanup_link_shim_lock
+    trap - EXIT INT TERM
+  fi
+}
+
+normalize_include_path() {
+  case "$1" in
+    "${DRAGONFLY_SYSROOT}"/*)
+      printf '%s\n' "$1"
+      ;;
+    /usr/include|/usr/include/*|/usr/local/include|/usr/local/include/*)
+      printf '%s%s\n' "${DRAGONFLY_SYSROOT}" "$1"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+normalize_library_path() {
+  case "$1" in
+    "${DRAGONFLY_SYSROOT}"/*)
+      printf '%s\n' "$1"
+      ;;
+    /lib|/lib/*|/usr/lib|/usr/lib/*|/usr/local/lib|/usr/local/lib/*)
+      printf '%s%s\n' "${DRAGONFLY_SYSROOT}" "$1"
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
+  esac
+}
+
+filtered_args=()
+saw_posix_source=0
+saw_posix_c_source=0
+saw_xopen_source=0
+is_cxx=0
+lang_next=0
+pending_include_flag=
+pending_library_flag=
+for arg in "$@"; do
+  if [ -n "${pending_include_flag}" ]; then
+    filtered_args+=("${pending_include_flag}" "$(normalize_include_path "$arg")")
+    pending_include_flag=
+    continue
+  fi
+
+  if [ -n "${pending_library_flag}" ]; then
+    filtered_args+=("${pending_library_flag}" "$(normalize_library_path "$arg")")
+    pending_library_flag=
+    continue
+  fi
+
+  case "$arg" in
+    -x)
+      lang_next=1
+      filtered_args+=("$arg")
+      ;;
+    c++)
+      if [ "${lang_next}" -eq 1 ]; then
+        is_cxx=1
+      fi
+      lang_next=0
+      filtered_args+=("$arg")
+      ;;
+    c)
+      lang_next=0
+      filtered_args+=("$arg")
+      ;;
+    cc|cpp|objective-c++|objective-c|assembler|assembler-with-cpp)
+      lang_next=0
+      filtered_args+=("$arg")
+      ;;
+    -I|-isystem|-idirafter|-iquote)
+      lang_next=0
+      pending_include_flag="$arg"
+      ;;
+    -L)
+      lang_next=0
+      pending_library_flag="$arg"
+      ;;
+    -I/*)
+      lang_next=0
+      filtered_args+=("-I" "$(normalize_include_path "${arg#-I}")")
+      ;;
+    -L/*)
+      lang_next=0
+      filtered_args+=("-L" "$(normalize_library_path "${arg#-L}")")
+      ;;
+    -isystem/*)
+      lang_next=0
+      filtered_args+=("-isystem" "$(normalize_include_path "${arg#-isystem}")")
+      ;;
+    -idirafter/*)
+      lang_next=0
+      filtered_args+=("-idirafter" "$(normalize_include_path "${arg#-idirafter}")")
+      ;;
+    -iquote/*)
+      lang_next=0
+      filtered_args+=("-iquote" "$(normalize_include_path "${arg#-iquote}")")
+      ;;
+    -Wl,--no-undefined-version)
+      # Host ld.gold rejects Rust's allocator export version script on this
+      # DragonFly cross link even when the __rust_* symbols are present.
+      ;;
+    -D_POSIX_SOURCE|-D_POSIX_SOURCE=*)
+      saw_posix_source=1
+      ;;
+    -D_POSIX_C_SOURCE|-D_POSIX_C_SOURCE=*)
+      saw_posix_c_source=1
+      filtered_args+=("$arg")
+      ;;
+    -D_XOPEN_SOURCE|-D_XOPEN_SOURCE=*)
+      saw_xopen_source=1
+      filtered_args+=("$arg")
+      ;;
+    /lib/*|/usr/lib/*|/usr/local/lib/*)
+      filtered_args+=("$(normalize_library_path "$arg")")
+      ;;
+    *)
+      filtered_args+=("$arg")
+      ;;
+  esac
+done
+
+if [ -n "${pending_include_flag}" ]; then
+  filtered_args+=("${pending_include_flag}")
+fi
+
+if [ -n "${pending_library_flag}" ]; then
+  filtered_args+=("${pending_library_flag}")
+fi
+
+if [ "${saw_posix_source}" -eq 1 ] && [ "${saw_posix_c_source}" -eq 0 ]; then
+  filtered_args+=("-D_POSIX_C_SOURCE=200112L")
+fi
+
+if [ "${saw_posix_source}" -eq 1 ] && [ "${saw_xopen_source}" -eq 0 ]; then
+  filtered_args+=("-D_XOPEN_SOURCE=700")
+fi
+
+needs_link=1
+for arg in "${filtered_args[@]}"; do
+  case "$arg" in
+    -c|-E|-S|-M|-MM|-fsyntax-only|-###|-print-*|--version|-v|-V|-emit-llvm|-r)
+      needs_link=0
+      break
+      ;;
+  esac
+done
+
+extra_args=()
+if [ "${needs_link}" -eq 1 ] && [ -f "${compat_src}" ]; then
+  if [ ! -f "${compat_obj}" ] || [ "${compat_src}" -nt "${compat_obj}" ]; then
+    while ! mkdir "${compat_lock}" 2>/dev/null; do
+      sleep 1
+    done
+
+    cleanup_lock() {
+      rmdir "${compat_lock}" 2>/dev/null || true
+    }
+
+    trap cleanup_lock EXIT INT TERM
+
+    if [ ! -f "${compat_obj}" ] || [ "${compat_src}" -nt "${compat_obj}" ]; then
+      "${sanitized_driver_env[@]}" /usr/bin/clang \
+        --target=x86_64-unknown-dragonfly \
+        --sysroot="${DRAGONFLY_SYSROOT}" \
+        -B"${gcc_runtime_dir}" \
+        -L"${gcc_runtime_dir}" \
+        -idirafter "${gcc_runtime_include_dir}" \
+        -idirafter "${gcc_include_dir}" \
+        -idirafter "${gcc_fixed_include_dir}" \
+        -fPIC \
+        -c "${compat_src}" \
+        -o "${compat_obj}"
+    fi
+
+    cleanup_lock
+    trap - EXIT INT TERM
+  fi
+
+  extra_args+=(-x none "${compat_obj}")
+fi
+
+linker_args=()
+if [ "${needs_link}" -eq 1 ] && [ "${use_link_shim}" -eq 1 ]; then
+  prepare_link_shim
+  linker_args+=(-L"${link_shim_dir}")
+
+  if [ "${DRAGONFLY_USE_LD}" = "bfd" ]; then
+    linker_args+=(
+      "-Wl,-rpath-link,${gcc_runtime_dir}"
+      "-Wl,-rpath-link,${DRAGONFLY_SYSROOT}/lib"
+      "-Wl,-rpath-link,${DRAGONFLY_SYSROOT}/usr/lib"
+    )
+  fi
+fi
+
+include_args=()
+if [ "${is_cxx}" -eq 1 ]; then
+  include_args+=(
+    -idirafter "${gcc_runtime_include_dir}"
+    -idirafter "${gcc_include_dir}"
+    -idirafter "${gcc_fixed_include_dir}"
+  )
+fi
+
+exec "${sanitized_driver_env[@]}" /usr/bin/clang \
+  --target=x86_64-unknown-dragonfly \
+  --sysroot="${DRAGONFLY_SYSROOT}" \
+  -B"${gcc_runtime_dir}" \
+  -L"${gcc_runtime_dir}" \
+  "${include_args[@]}" \
+  "${linker_args[@]}" \
+  -fuse-ld="${DRAGONFLY_USE_LD}" \
+  "${filtered_args[@]}" \
+  "${extra_args[@]}"

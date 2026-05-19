@@ -1,0 +1,15 @@
+[mcp_servers.remote-exec]
+url = "http://127.0.0.1:8787/mcp"
+
+[mcp_servers.remote-exec.tools.exec_command]
+approval_mode = "approve"
+
+[mcp_servers.remote-exec.tools.write_stdin]
+approval_mode = "approve"
+
+[mcp_servers.remote-exec.tools.transfer_files]
+approval_mode = "approve"
+
+[mcp_servers.remote-exec.tools.apply_patch]
+approval_mode = "approve"
+

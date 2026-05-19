@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+: "${DRAGONFLY_SYSROOT:=/mnt/t2}"
+
+pkgconfig_libdata="${DRAGONFLY_SYSROOT}/usr/libdata/pkgconfig"
+pkgconfig_local_libdata="${DRAGONFLY_SYSROOT}/usr/local/libdata/pkgconfig"
+pkgconfig_lib="${DRAGONFLY_SYSROOT}/usr/lib/pkgconfig"
+pkgconfig_local_lib="${DRAGONFLY_SYSROOT}/usr/local/lib/pkgconfig"
+
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_SYSROOT_DIR="${DRAGONFLY_SYSROOT}"
+export PKG_CONFIG_LIBDIR="${PKG_CONFIG_LIBDIR:-${pkgconfig_libdata}:${pkgconfig_local_libdata}:${pkgconfig_lib}:${pkgconfig_local_lib}}"
+
+exec /usr/bin/pkg-config "$@"

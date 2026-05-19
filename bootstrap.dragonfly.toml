@@ -1,0 +1,25 @@
+change-id = "ignore"
+
+[build]
+build = "x86_64-unknown-linux-gnu"
+host = ["x86_64-unknown-linux-gnu", "x86_64-unknown-dragonfly"]
+target = ["x86_64-unknown-linux-gnu", "x86_64-unknown-dragonfly"]
+cargo = "/home/chi/.rustup/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/cargo"
+rustc = "/home/chi/.rustup/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc"
+extended = true
+tools = ["cargo"]
+docs = false
+compiler-docs = false
+
+[llvm]
+download-ci-llvm = false
+
+[rust]
+download-rustc = false
+
+[target.x86_64-unknown-dragonfly]
+cc = "/home/chi/ddev/rust/haiku/bin/x86_64-unknown-dragonfly-clang"
+cxx = "/home/chi/ddev/rust/haiku/bin/x86_64-unknown-dragonfly-clang++"
+linker = "/home/chi/ddev/rust/haiku/bin/x86_64-unknown-dragonfly-clang"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
