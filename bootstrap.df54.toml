@@ -1,0 +1,34 @@
+#change-id = "ignore"
+
+[build]
+build = "x86_64-unknown-linux-musl"
+host = ["x86_64-unknown-dragonfly"]
+target = ["x86_64-unknown-dragonfly"]
+build-dir = "build-dragonfly54"
+cargo = "/home/chi/ddev/rust/haiku/rustc-1.85.0-src/build-phase1/x86_64-unknown-linux-musl/stage1-tools-bin/cargo"
+rustc = "/home/chi/ddev/rust/haiku/rustc-1.85.0-src/build-phase1/x86_64-unknown-linux-musl/stage1/bin/rustc"
+local-rebuild = true
+extended = true
+docs = false
+compiler-docs = false
+cargo-native-static = true
+
+[llvm]
+download-ci-llvm = false
+ninja = true
+targets = "X86"
+
+[rust]
+download-rustc = false
+llvm-tools = false
+
+[target.x86_64-unknown-dragonfly]
+cc = "/home/chi/ddev/rust/haiku/bin1/x86_64-unknown-dragonfly-clang"
+cxx = "/home/chi/ddev/rust/haiku/bin1/x86_64-unknown-dragonfly-clang++"
+linker = "/home/chi/ddev/rust/haiku/bin1/x86_64-unknown-dragonfly-clang"
+ar = "/usr/bin/llvm-ar"
+ranlib = "/usr/bin/llvm-ranlib"
+
+[target.x86_64-unknown-linux-musl]
+crt-static = false
+musl-root = "/usr"
